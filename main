@@ -1,0 +1,112 @@
+indx-html 
+-- PostGIS ኤክስቴንሽን መኖሩን ያረጋግጡ
+CREATE EXTENSION IF NOT EXISTS postgis;
+
+CREATE TABLE parcels (
+    id SERIAL PRIMARY KEY,
+    owner_name VARCHAR(100) NOT NULL,
+    parcel_id VARCHAR(50) UNIQUE NOT NULL,
+    land_use VARCHAR(50), -- Residential, Commercial, etc.
+    area_sqm DECIMAL,
+    registration_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    geom GEOMETRY(Polygon, 3857) -- ለካርታ ስራ
+);
+const express = require('express');
+const { Pool } = require('pg');
+const app = express();
+app.use(express.json());
+
+const pool = new Pool({
+    connectionString: "YOUR_DATABASE_URL_HERE"
+});
+
+// አዲስ ይዞታ ለመመዝገብ
+app.post('/api/register-land', async (req, res) => {
+    const { owner, p_id, use, area, coords } = req.body;
+    try {
+        const query = `
+            INSERT INTO parcels (owner_name, parcel_id, land_use, area_sqm, geom)
+            VALUES ($1, $2, $3, $4, ST_SetSRID(ST_GeomFromGeoJSON($5), 3857))
+            RETURNING id;
+        `;
+        const result = await pool.query(query, [owner, p_id, use, area, coords]);
+        res.status(201).json({ message: "ይዞታው በስኬት ተመዝግቧል", id: result.rows[0].id });
+    } catch (err) {
+        res.status(500).json({ error: "ስህተት ተከስቷል: " + err.message });
+    }
+});
+
+app.listen(3000, () => console.log('Server running on port 3000'));
+<!DOCTYPE html>
+<html>
+<head>
+    <title>የመሬት መመዝገቢያ ዳሽቦርድ</title>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/ol@v10.3.1/ol.css">
+    <style>
+        #map { width: 100%; height: 400px; border: 1px solid #ccc; }
+        .form-container { padding: 20px; font-family: sans-serif; }
+        input, select { margin-bottom: 10px; padding: 8px; width: 200px; display: block; }
+    </style>
+</head>
+<body>
+    <div class="form-container">
+        <h2>አዲስ የይዞታ መረጃ መመዝገቢያ</h2>
+        <input type="text" id="owner" placeholder="የባለቤት ስም">
+        <input type="text" id="p_id" placeholder="የይዞታ መለያ (Parcel ID)">
+        <select id="use">
+            <option value="Residential">ለመኖሪያ</option>
+            <option value="Commercial">ለንግድ</option>
+            <option value="Green Area">ለአረንጓዴ ስፍራ</option>
+        </select>
+        <input type="number" id="area" placeholder="የቦታ ስፋት (ካሬ ሜትር)">
+        
+        <p>ካርታው ላይ የቦታውን ወሰን ይሳሉ፡</p>
+        <div id="map"></div>
+        <br>
+        <button onclick="saveData()" style="padding: 10px 20px; background: green; color: white; border: none; cursor: pointer;">መረጃውን መዝግብ</button>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/ol@v10.3.1/dist/ol.js"></script>
+    <script>
+        // ካርታውን ማስነሳት
+        const map = new ol.Map({
+            target: 'map',
+            layers: [ new ol.layer.Tile({ source: new ol.source.OSM() }) ],
+            view: new ol.view.View({ center: ol.proj.fromLonLat([38.74, 9.01]), zoom: 12 })
+        });
+
+        // ካርታ ላይ የመሳያ መሣሪያ (Draw Tool)
+        const source = new ol.source.Vector();
+        const vector = new ol.layer.Vector({ source: source });
+        map.addLayer(vector);
+        const draw = new ol.interaction.Draw({ source: source, type: 'Polygon' });
+        map.addInteraction(draw);
+
+        // መረጃውን ወደ ሰርቨር መላክ
+        async function saveData() {
+            const features = source.getFeatures();
+            if (features.length === 0) return alert("እባክዎ ካርታው ላይ መጀመሪያ ይሳሉ!");
+            
+            const format = new ol.format.GeoJSON();
+            const coords = format.writeGeometry(features[0].getGeometry());
+
+            const data = {
+                owner: document.getElementById('owner').value,
+                p_id: document.getElementById('p_id').value,
+                use: document.getElementById('use').value,
+                area: document.getElementById('area').value,
+                coords: coords
+            };
+
+            const response = await fetch('/api/register-land', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(data)
+            });
+
+            const result = await response.json();
+            alert(result.message);
+        }
+    </script>
+</body>
+</html>
